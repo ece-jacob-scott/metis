@@ -1,0 +1,20 @@
+[
+    {
+        "arguments": [
+            "clang",
+            "-c",
+            "-g",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wpedantic",
+            "-std=c99",
+            "-Isrc",
+            "-o",
+            "bin/metis",
+            "src/main.c"
+        ],
+        "directory": "/home/jscott/watch",
+        "file": "src/main.c"
+    }
+]

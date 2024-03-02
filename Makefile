@@ -5,7 +5,8 @@ BIN_DIR=bin
 SOURCE_FILES=$(wildcard $(PROJECT_DIR)/*.c)
 INCLUDE_DIRS=$(PROJECT_DIR)
 
-CC=gcc
+# CC=gcc
+CC=clang
 CFLAGS=-g -Wall -Wextra -Werror -Wpedantic -std=c99 -I$(INCLUDE_DIRS)
 
 build: $(SOURCE_FILES)
