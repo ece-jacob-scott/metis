@@ -10,6 +10,10 @@
  * The program is designed to be used in a similar way to nodemon, a popular
  * file watcher for Node.js.
  *
+ * Known issues:
+ * - can't ignore files because comparing file paths is not trivial
+ * - only works on Ubuntu
+ *
  * Usage:
  * - metis -c "echo 'File modified'" test.txt
  * - metis -c "echo 'File modified'" .
@@ -136,6 +140,12 @@ void free_options(OPTIONS *options) {
   free(options);
 }
 
+bool should_skip(char *file_path) {
+  return (strcmp(file_path, "..") == 0 || strcmp(file_path, ".") == 0 ||
+          strcmp(file_path, ".git") == 0 || strcmp(file_path, ".cache") == 0 ||
+          strcmp(file_path, "node_modules") == 0);
+}
+
 typedef struct watcher {
   int wd;
   char *file_name;
@@ -165,7 +175,7 @@ void search_watchers_by_wd(const WATCHER *watcher_array, int len, int wd,
 }
 
 void trap(int signal) {
-  printf("\ngot %d signal\n", signal);
+  printf("\nstopping metis (%d)...\n", signal);
   execute = false;
 }
 
@@ -218,8 +228,6 @@ void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
   }
 
   if (S_ISREG(sbuf.st_mode)) {
-    printf("file: %s\n", curr_path);
-
     WATCHER watcher;
     watcher.wd = add_watcher(watcher_fd, curr_path);
     watcher.file_name = strdup(curr_path);
@@ -229,8 +237,6 @@ void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
   }
 
   if (S_ISDIR(sbuf.st_mode)) {
-    printf("dir: %s\n", curr_path);
-
     WATCHER watcher;
     watcher.wd = add_watcher(watcher_fd, curr_path);
     watcher.file_name = strdup(curr_path);
@@ -247,10 +253,7 @@ void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
     errno = 0;
     struct dirent *dp;
     while ((dp = readdir(dir))) {
-      // TODO: write a skip function
-      if (strcmp(dp->d_name, "..") == 0 || strcmp(dp->d_name, ".") == 0 ||
-          strcmp(dp->d_name, ".git") == 0 ||
-          strcmp(dp->d_name, ".cache") == 0) {
+      if (should_skip(dp->d_name)) {
         continue;
       }
 
@@ -264,8 +267,6 @@ void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
 
     return;
   }
-
-  printf("skipping: %s\n", curr_path);
 
   return;
 }
@@ -284,10 +285,27 @@ void walk_files_start(WATCHER **watcher_arr, int *watcher_arr_len,
   return;
 }
 
+void run_command(char *command, char *file_name) {
+  bool need_free = true;
+  char *new_command = strreplace(command, "{}", file_name);
+
+  if (new_command == NULL) {
+    need_free = false;
+    new_command = command;
+  }
+
+  int err = system(new_command);
+  if (err != 0) {
+    perror("command");
+  }
+
+  if (need_free) {
+    free(new_command);
+  }
+}
+
 void watch_wait(struct pollfd *watcher_poll, int fd, OPTIONS *options,
                 WATCHER *watcher_arr, int watcher_arr_len) {
-  int err;
-
   while (execute) {
     if (poll(watcher_poll, 1, 100) != 1) {
       // not ready
@@ -323,29 +341,14 @@ void watch_wait(struct pollfd *watcher_poll, int fd, OPTIONS *options,
       }
 
       if (options->command != NULL) {
-        bool need_free = true;
-        char *new_command = strreplace(options->command, "{}", file_name);
-
-        if (new_command == NULL) {
-          need_free = false;
-          new_command = options->command;
-        }
-
-        err = system(new_command);
-        if (err != 0) {
-          perror("command");
-        }
-
-        if (need_free) {
-          free(new_command);
-        }
+        run_command(options->command, file_name);
       }
 
       i += EVENT_SIZE + event->len;
     }
+
     return;
   }
-  return;
 }
 
 void watch(OPTIONS *options) {
@@ -373,8 +376,6 @@ void watch(OPTIONS *options) {
 
     // poll for reads
     watch_wait(&watcher_poll, fd, options, watcher_arr, watcher_arr_len);
-
-    printf("readding watchers...\n");
 
     for (int i = 0; i < watcher_arr_len; i++) {
       free(watcher_arr[i].file_name);
