@@ -195,6 +195,17 @@ char *concat_path(char *curr_path, char *new_path) {
   return path;
 }
 
+int add_watcher(int fd, char *path) {
+  // add watcher and return
+  int wd = inotify_add_watch(fd, path, IN_MODIFY);
+  if (wd < 0) {
+    perror("inotify_add_watch");
+    abort();
+  }
+
+  return wd;
+}
+
 void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
                     int *watcher_arr_len, int watcher_fd) {
   int err;
@@ -208,15 +219,9 @@ void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
 
   if (S_ISREG(sbuf.st_mode)) {
     printf("file: %s\n", curr_path);
-    // add watcher and return
-    int wd = inotify_add_watch(watcher_fd, curr_path, IN_MODIFY);
-    if (wd < 0) {
-      perror("inotify_add_watch");
-      abort();
-    }
 
     WATCHER watcher;
-    watcher.wd = wd;
+    watcher.wd = add_watcher(watcher_fd, curr_path);
     watcher.file_name = strdup(curr_path);
     (*watcher_arr_len) =
         push_watcher(watcher_arr, (*watcher_arr_len), &watcher);
@@ -225,6 +230,13 @@ void walk_files_rec(char *curr_path, WATCHER **watcher_arr,
 
   if (S_ISDIR(sbuf.st_mode)) {
     printf("dir: %s\n", curr_path);
+
+    WATCHER watcher;
+    watcher.wd = add_watcher(watcher_fd, curr_path);
+    watcher.file_name = strdup(curr_path);
+    (*watcher_arr_len) =
+        push_watcher(watcher_arr, (*watcher_arr_len), &watcher);
+
     // recursive call on all the files
     DIR *dir = opendir(curr_path);
     if (dir == NULL) {
@@ -272,30 +284,12 @@ void walk_files_start(WATCHER **watcher_arr, int *watcher_arr_len,
   return;
 }
 
-void watch(OPTIONS *options) {
+void watch_wait(struct pollfd *watcher_poll, int fd, OPTIONS *options,
+                WATCHER *watcher_arr, int watcher_arr_len) {
   int err;
-  WATCHER *watcher_arr = (WATCHER *)malloc(1 * sizeof(WATCHER));
-  int watcher_arr_len = 0;
 
-  // init watcher fd
-  int fd = inotify_init();
-  if (fd < 0) {
-    perror("inotify_init");
-    abort();
-  }
-
-  walk_files_start(&watcher_arr, &watcher_arr_len, fd, options);
-
-  // go over the paths and see what kind of file they are
-  struct pollfd watcher_poll;
-  memset(&watcher_poll, 0, sizeof(watcher_poll));
-
-  watcher_poll.fd = fd;
-  watcher_poll.events = POLLIN | POLLPRI | POLLERR;
-
-  // poll for reads
   while (execute) {
-    if (poll(&watcher_poll, 1, 100) != 1) {
+    if (poll(watcher_poll, 1, 100) != 1) {
       // not ready
       continue;
     }
@@ -314,10 +308,7 @@ void watch(OPTIONS *options) {
       return;
     }
 
-    printf("got new event\n");
-
     while (i < len) {
-      printf("processing event: %d\n", i);
       struct inotify_event *event;
 
       event = (struct inotify_event *)&buf[i];
@@ -330,8 +321,6 @@ void watch(OPTIONS *options) {
         search_watchers_by_wd(watcher_arr, watcher_arr_len, event->wd, &w);
         file_name = w.file_name;
       }
-
-      printf("%s updated!\n", file_name);
 
       if (options->command != NULL) {
         bool need_free = true;
@@ -354,17 +343,49 @@ void watch(OPTIONS *options) {
 
       i += EVENT_SIZE + event->len;
     }
+    return;
   }
+  return;
+}
 
-  for (int i = 0; i < watcher_arr_len; i++) {
-    free(watcher_arr[i].file_name);
-  }
+void watch(OPTIONS *options) {
+  int err;
 
-  free(watcher_arr);
+  while (execute) {
+    WATCHER *watcher_arr = (WATCHER *)malloc(1 * sizeof(WATCHER));
+    int watcher_arr_len = 0;
 
-  err = close(fd);
-  if (err != 0) {
-    perror("close");
+    // init watcher fd
+    int fd = inotify_init();
+    if (fd < 0) {
+      perror("inotify_init");
+      abort();
+    }
+
+    walk_files_start(&watcher_arr, &watcher_arr_len, fd, options);
+
+    // go over the paths and see what kind of file they are
+    struct pollfd watcher_poll;
+    memset(&watcher_poll, 0, sizeof(watcher_poll));
+
+    watcher_poll.fd = fd;
+    watcher_poll.events = POLLIN | POLLPRI | POLLERR;
+
+    // poll for reads
+    watch_wait(&watcher_poll, fd, options, watcher_arr, watcher_arr_len);
+
+    printf("readding watchers...\n");
+
+    for (int i = 0; i < watcher_arr_len; i++) {
+      free(watcher_arr[i].file_name);
+    }
+
+    free(watcher_arr);
+
+    err = close(fd);
+    if (err != 0) {
+      perror("close");
+    }
   }
 }
 
